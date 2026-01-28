@@ -132,39 +132,10 @@ connector.start()
 
 ## 配置参考
 
-### 插件模式配置项
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `clientId` | `string` | — | 钉钉 AppKey（必填） |
-| `clientSecret` | `string` | — | 钉钉 AppSecret（必填） |
-| `enableMediaUpload` | `boolean` | `true` | 图片上传（prompt 引导 + 后处理） |
-| `systemPrompt` | `string` | `""` | 自定义 system prompt |
-| `dmPolicy` | `string` | `"open"` | 私聊策略：`open` / `pairing` / `allowlist` |
-| `groupPolicy` | `string` | `"open"` | 群聊策略：`open` / `allowlist` |
-
-### Python 连接器参数
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `dingtalk_client_id` | `str` | — | 钉钉 AppKey（必填） |
-| `dingtalk_client_secret` | `str` | — | 钉钉 AppSecret（必填） |
-| `gateway_url` | `str` | `http://127.0.0.1:18789` | Gateway 地址 |
-| `model` | `str` | `default` | 模型名称 |
-| `enable_media_upload` | `bool` | `True` | 图片上传引导 |
-| `system_prompt` | `str` | `""` | 自定义 system prompt |
-| `timeout` | `float` | `120.0` | SSE 超时秒数 |
-| `gateway_token` | `str` | `""` | Gateway 认证 token |
-
-### 环境变量
-
-| 环境变量 | 对应参数 |
-|---------|---------|
-| `DINGTALK_CLIENT_ID` | `dingtalk_client_id` |
-| `DINGTALK_CLIENT_SECRET` | `dingtalk_client_secret` |
-| `MOLTBOT_GATEWAY_URL` | `gateway_url` |
-| `MOLTBOT_MODEL` | `model` |
-| `MOLTBOT_GATEWAY_TOKEN` | `gateway_token` |
+| 配置项 | 环境变量 | 说明 |
+|--------|----------|------|
+| `clientId` / `dingtalk_client_id` | `DINGTALK_CLIENT_ID` | 钉钉 AppKey |
+| `clientSecret` / `dingtalk_client_secret` | `DINGTALK_CLIENT_SECRET` | 钉钉 AppSecret |
 
 ## 项目结构
 
