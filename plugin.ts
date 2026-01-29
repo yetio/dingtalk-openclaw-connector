@@ -158,6 +158,18 @@ function buildMediaSystemPrompt(): string {
  */
 const LOCAL_IMAGE_RE = /!\[([^\]]*)\]\(((?:file:\/\/\/|MEDIA:|attachment:\/\/\/)[^\s)]+|\/(?:tmp|var|private|Users)[^\s)]+)\)/g;
 
+/** 图片文件扩展名 */
+const IMAGE_EXTENSIONS = /\.(png|jpg|jpeg|gif|bmp|webp|tiff|svg)$/i;
+
+/**
+ * 匹配纯文本中的本地图片路径（不在 markdown 图片语法中）：
+ * - `/var/folders/.../screenshot.png`
+ * - `/tmp/image.jpg`
+ * - `/Users/xxx/photo.png`
+ * 支持 backtick 包裹: `path`
+ */
+const BARE_IMAGE_PATH_RE = /`?(\/(?:tmp|var|private|Users)\/[^\s`'",)]+\.(?:png|jpg|jpeg|gif|bmp|webp))`?/gi;
+
 /** 去掉 file:// / MEDIA: / attachment:// 前缀，得到实际的绝对路径 */
 function toLocalPath(raw: string): string {
   let path = raw;
@@ -228,22 +240,50 @@ async function processLocalImages(
     return content;
   }
 
-  const matches = [...content.matchAll(LOCAL_IMAGE_RE)];
-  if (matches.length === 0) {
-    log?.info?.(`[DingTalk][Media] 未检测到本地图片路径`);
-    return content;
-  }
-
-  log?.info?.(`[DingTalk][Media] 检测到 ${matches.length} 个本地图片，开始上传...`);
-
   let result = content;
-  for (const match of matches) {
-    const [fullMatch, alt, rawPath] = match;
-    const mediaId = await uploadToDingTalk(rawPath, oapiToken, log);
-    if (mediaId) {
-      result = result.replace(fullMatch, `![${alt}](${mediaId})`);
+
+  // 第一步：匹配 markdown 图片语法 ![alt](path)
+  const mdMatches = [...content.matchAll(LOCAL_IMAGE_RE)];
+  if (mdMatches.length > 0) {
+    log?.info?.(`[DingTalk][Media] 检测到 ${mdMatches.length} 个 markdown 图片，开始上传...`);
+    for (const match of mdMatches) {
+      const [fullMatch, alt, rawPath] = match;
+      const mediaId = await uploadToDingTalk(rawPath, oapiToken, log);
+      if (mediaId) {
+        result = result.replace(fullMatch, `![${alt}](${mediaId})`);
+      }
     }
   }
+
+  // 第二步：匹配纯文本中的本地图片路径（如 `/var/folders/.../xxx.png`）
+  // 排除已被 markdown 图片语法包裹的路径
+  const bareMatches = [...result.matchAll(BARE_IMAGE_PATH_RE)];
+  const newBareMatches = bareMatches.filter(m => {
+    // 检查这个路径是否已经在 ![...](...) 中
+    const idx = m.index!;
+    const before = result.slice(Math.max(0, idx - 10), idx);
+    return !before.includes('](');
+  });
+
+  if (newBareMatches.length > 0) {
+    log?.info?.(`[DingTalk][Media] 检测到 ${newBareMatches.length} 个纯文本图片路径，开始上传...`);
+    // 从后往前替换，避免 index 偏移
+    for (const match of newBareMatches.reverse()) {
+      const [fullMatch, rawPath] = match;
+      log?.info?.(`[DingTalk][Media] 纯文本图片: "${fullMatch}" -> path="${rawPath}"`);
+      const mediaId = await uploadToDingTalk(rawPath, oapiToken, log);
+      if (mediaId) {
+        const replacement = `![](${mediaId})`;
+        result = result.slice(0, match.index!) + result.slice(match.index!).replace(fullMatch, replacement);
+        log?.info?.(`[DingTalk][Media] 替换纯文本路径为图片: ${replacement}`);
+      }
+    }
+  }
+
+  if (mdMatches.length === 0 && newBareMatches.length === 0) {
+    log?.info?.(`[DingTalk][Media] 未检测到本地图片路径`);
+  }
+
   return result;
 }
 
@@ -349,7 +389,7 @@ async function streamAICard(
           msgContent: '',
           staticMsgContent: '',
           sys_full_json_obj: JSON.stringify({
-            order: ['msgTitle', 'msgContent', 'staticMsgContent', 'msgTextList', 'msgImages', 'msgSlider', 'msgButtons'],
+            order: ['msgContent'],  // 只声明实际使用的字段，避免部分客户端显示空占位
           }),
         },
       },
@@ -410,7 +450,7 @@ async function finishAICard(
         msgContent: content,
         staticMsgContent: '',
         sys_full_json_obj: JSON.stringify({
-          order: ['msgTitle', 'msgContent', 'staticMsgContent', 'msgTextList', 'msgImages', 'msgSlider', 'msgButtons'],
+          order: ['msgContent'],  // 只声明实际使用的字段，避免部分客户端显示空占位
         }),
       },
     },

@@ -8,7 +8,7 @@ from .connector import MoltbotConnector
 from .handler import MoltbotChatbotHandler
 from .media import build_media_system_prompt
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "MoltbotConnector",
