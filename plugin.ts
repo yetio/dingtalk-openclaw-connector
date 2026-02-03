@@ -1675,6 +1675,96 @@ async function sendAICardInternal(
 }
 
 /**
+ * 通用模板卡片发送函数
+ */
+async function sendCardInternal(
+  config: any,
+  target: AICardTarget,
+  templateId: string,
+  content: string,
+  log?: any,
+): Promise<SendResult> {
+  const targetDesc = target.type === 'group'
+    ? `群聊 ${target.openConversationId}`
+    : `用户 ${target.userId}`;
+
+  try {
+    const token = await getAccessToken(config);
+    const outTrackId = `card_${Date.now()}_${Date.now() % 10000}`;
+    const callbackRouteKey = `route_${Date.now()}`;
+
+    // 构建请求体
+    const createBody: any = {
+      cardTemplateId: templateId,
+      outTrackId,
+      callbackType: 'STREAM',
+      callbackRouteKey,
+      cardData: { cardParamMap: { content } },
+      userIdType: 1,
+    };
+
+    // 添加空间模型
+    if (target.type === 'group') {
+      createBody.openSpaceId = `dtv1.card//IM_GROUP.${target.openConversationId}`;
+      createBody.imGroupOpenSpaceModel = { supportForward: true };
+    } else {
+      createBody.userId = target.userId;
+      createBody.imRobotOpenSpaceModel = { supportForward: true };
+    }
+
+    log?.info?.(`[DingTalk][Card] 发送模板卡片: ${targetDesc}, templateId=${templateId}`);
+
+    // 1. 创建卡片
+    const createResp = await axios.post(`${DINGTALK_API}/v1.0/card/instances`, createBody, {
+      headers: { 'x-acs-dingtalk-access-token': token, 'Content-Type': 'application/json' },
+    });
+
+    if (!createResp.data?.success) {
+      throw new Error(createResp.data?.message || '创建卡片失败');
+    }
+
+    // 2. 投放
+    const deliverBody: any = {
+      outTrackId,
+      userIdType: 1,
+    };
+
+    if (target.type === 'group') {
+      deliverBody.openSpaceId = `dtv1.card//IM_GROUP.${target.openConversationId}`;
+    } else {
+      deliverBody.openSpaceId = `dtv1.card//IM_ROBOT.${target.userId}`;
+      deliverBody.imRobotOpenDeliverModel = { spaceType: 'IM_ROBOT' };
+    }
+
+    await axios.post(`${DINGTALK_API}/v1.0/card/instances/deliver`, deliverBody, {
+      headers: { 'x-acs-dingtalk-access-token': token, 'Content-Type': 'application/json' },
+    });
+
+    // 3. Streaming 更新内容
+    const streamingBody = {
+      outTrackId,
+      guid: `${Date.now()}_${Date.now() % 1000}`,
+      key: 'content',
+      content,
+      isFull: true,
+      isFinalize: true,
+      isError: false,
+    };
+
+    await axios.put(`${DINGTALK_API}/v1.0/card/streaming`, streamingBody, {
+      headers: { 'x-acs-dingtalk-access-token': token, 'Content-Type': 'application/json' },
+    });
+
+    log?.info?.(`[DingTalk][Card] 发送成功: ${targetDesc}`);
+    return { ok: true, cardInstanceId: outTrackId, usedAICard: true };
+
+  } catch (err: any) {
+    log?.error?.(`[DingTalk][Card] 发送失败 (${targetDesc}): ${err.message}`);
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
  * 主动发送 AI Card 到单聊用户
  */
 async function sendAICardToUser(
@@ -1696,6 +1786,32 @@ async function sendAICardToGroup(
   log?: any,
 ): Promise<SendResult> {
   return sendAICardInternal(config, { type: 'group', openConversationId }, content, log);
+}
+
+/**
+ * 主动发送模板卡片到单聊用户
+ */
+async function sendCardToUser(
+  config: any,
+  userId: string,
+  templateId: string,
+  content: string,
+  log?: any,
+): Promise<SendResult> {
+  return sendCardInternal(config, { type: 'user', userId }, templateId, content, log);
+}
+
+/**
+ * 主动发送模板卡片到群聊
+ */
+async function sendCardToGroup(
+  config: any,
+  openConversationId: string,
+  templateId: string,
+  content: string,
+  log?: any,
+): Promise<SendResult> {
+  return sendCardInternal(config, { type: 'group', openConversationId }, templateId, content, log);
 }
 
 /**
@@ -1857,7 +1973,7 @@ async function sendToUser(
   content: string,
   options: ProactiveSendOptions = {},
 ): Promise<SendResult> {
-  const { log, useAICard = true, fallbackToNormal = true } = options;
+  const { log, useAICard = true, fallbackToNormal = true, cardTemplateId } = options;
 
   if (!config.clientId || !config.clientSecret) {
     return { ok: false, error: 'Missing clientId or clientSecret', usedAICard: false };
@@ -1868,26 +1984,36 @@ async function sendToUser(
     return { ok: false, error: 'userIds cannot be empty', usedAICard: false };
   }
 
-  // AI Card 只支持单个用户
+  // 优先使用配置的模板卡片
+  const templateId = cardTemplateId || config.cardTemplateId;
+  if (templateId && userIdArray.length === 1) {
+    log?.info?.(`[DingTalk][SendToUser] 使用模板卡片: userId=${userIdArray[0]}, templateId=${templateId}`);
+    const cardResult = await sendCardToUser(config, userIdArray[0], templateId, content, log);
+
+    if (cardResult.ok) {
+      return { ...cardResult, usedAICard: true };
+    }
+
+    log?.warn?.(`[DingTalk][SendToUser] 模板卡片发送失败: ${cardResult.error}`);
+    if (!fallbackToNormal) {
+      return cardResult;
+    }
+  }
+
+  // 回退到 AI Card
   if (useAICard && userIdArray.length === 1) {
-    log?.info?.(`[DingTalk][SendToUser] 尝试使用 AI Card 发送: userId=${userIdArray[0]}`);
+    log?.info?.(`[DingTalk][SendToUser] 回退到 AI Card: userId=${userIdArray[0]}`);
     const cardResult = await sendAICardToUser(config, userIdArray[0], content, log);
 
     if (cardResult.ok) {
-      return cardResult;
+      return { ...cardResult, usedAICard: true };
     }
-
-    // AI Card 失败
-    log?.warn?.(`[DingTalk][SendToUser] AI Card 发送失败: ${cardResult.error}`);
 
     if (!fallbackToNormal) {
-      log?.error?.(`[DingTalk][SendToUser] 不降级到普通消息，返回错误`);
       return cardResult;
     }
-
-    log?.info?.(`[DingTalk][SendToUser] 降级到普通消息发送`);
   } else if (useAICard && userIdArray.length > 1) {
-    log?.info?.(`[DingTalk][SendToUser] 多用户发送不支持 AI Card，使用普通消息`);
+    log?.info?.(`[DingTalk][SendToUser] 多用户使用普通消息`);
   }
 
   // 使用普通消息
@@ -1908,7 +2034,7 @@ async function sendToGroup(
   content: string,
   options: ProactiveSendOptions = {},
 ): Promise<SendResult> {
-  const { log, useAICard = true, fallbackToNormal = true } = options;
+  const { log, useAICard = true, fallbackToNormal = true, cardTemplateId } = options;
 
   if (!config.clientId || !config.clientSecret) {
     return { ok: false, error: 'Missing clientId or clientSecret', usedAICard: false };
@@ -1918,24 +2044,38 @@ async function sendToGroup(
     return { ok: false, error: 'openConversationId cannot be empty', usedAICard: false };
   }
 
-  // 尝试使用 AI Card
+  if (!content) {
+    return { ok: false, error: 'content cannot be empty', usedAICard: false };
+  }
+
+  // 优先使用配置的模板卡片
+  const templateId = cardTemplateId || config.cardTemplateId;
+  if (templateId) {
+    log?.info?.(`[DingTalk][SendToGroup] 使用模板卡片: openConversationId=${openConversationId}, templateId=${templateId}`);
+    const cardResult = await sendCardToGroup(config, openConversationId, templateId, content, log);
+
+    if (cardResult.ok) {
+      return { ...cardResult, usedAICard: true };
+    }
+
+    log?.warn?.(`[DingTalk][SendToGroup] 模板卡片发送失败: ${cardResult.error}`);
+    if (!fallbackToNormal) {
+      return cardResult;
+    }
+  }
+
+  // 回退到 AI Card
   if (useAICard) {
-    log?.info?.(`[DingTalk][SendToGroup] 尝试使用 AI Card 发送: openConversationId=${openConversationId}`);
+    log?.info?.(`[DingTalk][SendToGroup] 回退到 AI Card: openConversationId=${openConversationId}`);
     const cardResult = await sendAICardToGroup(config, openConversationId, content, log);
 
     if (cardResult.ok) {
-      return cardResult;
+      return { ...cardResult, usedAICard: true };
     }
-
-    // AI Card 失败
-    log?.warn?.(`[DingTalk][SendToGroup] AI Card 发送失败: ${cardResult.error}`);
 
     if (!fallbackToNormal) {
-      log?.error?.(`[DingTalk][SendToGroup] 不降级到普通消息，返回错误`);
       return cardResult;
     }
-
-    log?.info?.(`[DingTalk][SendToGroup] 降级到普通消息发送`);
   }
 
   // 使用普通消息
@@ -2492,7 +2632,10 @@ const plugin = {
   configSchema: {
     type: 'object',
     additionalProperties: true,
-    properties: { enabled: { type: 'boolean', default: true } },
+    properties: { 
+      enabled: { type: 'boolean', default: true },
+      cardTemplateId: { type: 'string', description: 'Default card template ID for sending messages' },
+    },
   },
   register(api: ClawdbotPluginApi) {
     runtime = api.runtime;
