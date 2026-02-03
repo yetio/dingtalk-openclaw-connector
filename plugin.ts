@@ -2586,6 +2586,128 @@ const plugin = {
     });
 
     /**
+     * 发送自定义模板卡片（支持 Markdown 变量）
+     * 参数：
+     *   - target: 目标（user:<userId> 或 group:<openConversationId>）
+     *   - templateId: 卡片模板 ID（从钉钉开放平台创建）
+     *   - templateVariables: 模板变量（JSON 对象，会自动转为字符串）
+     *   - cardOptions?: 可选配置：
+     *     - callbackType?: 'sync' | 'async'（默认 sync）
+     *     - supportForward?: boolean（是否支持转发，默认 true）
+     *   - accountId?: 账号 ID
+     *
+     * 使用示例：
+     *   dingtalk-connector.sendTemplateCard({
+     *     target: 'user:manager1234',
+     *     templateId: 'your-template-id',
+     *     templateVariables: {
+     *       title: '股票分析报告',
+     *       stock_code: '300870',
+     *       stock_name: '欧陆通',
+     *       price: '238.50',
+     *       score: '58',
+     *       advice: '🟡 持有',
+     *       decision: '缩量回踩MA10/MA20支撑带',
+     *       ideal_buy: '236.50',
+     *       stop_loss: '224.50',
+     *       take_profit: '255.00'
+     *     }
+     *   })
+     */
+    api.registerGatewayMethod('dingtalk-connector.sendTemplateCard', async ({ respond, cfg, params, log }: any) => {
+      const { target, templateId, templateVariables, cardOptions, accountId } = params || {};
+      const account = dingtalkPlugin.config.resolveAccount(cfg, accountId);
+      const config = account?.config;
+
+      if (!config?.clientId || !config?.clientSecret) {
+        return respond(false, { error: 'DingTalk not configured' });
+      }
+
+      if (!target) {
+        return respond(false, { error: 'target is required (format: user:<userId> or group:<openConversationId>)' });
+      }
+
+      if (!templateId) {
+        return respond(false, { error: 'templateId is required' });
+      }
+
+      if (!templateVariables) {
+        return respond(false, { error: 'templateVariables is required' });
+      }
+
+      // 解析目标
+      const targetStr = String(target);
+      let dingtalkTarget: AICardTarget;
+
+      if (targetStr.startsWith('user:')) {
+        dingtalkTarget = { type: 'user', userId: targetStr.slice(5) };
+      } else if (targetStr.startsWith('group:')) {
+        dingtalkTarget = { type: 'group', openConversationId: targetStr.slice(6) };
+      } else {
+        return respond(false, { error: 'target format invalid. Use user:<userId> or group:<openConversationId>' });
+      }
+
+      const targetDesc = dingtalkTarget.type === 'group'
+        ? `群聊 ${dingtalkTarget.openConversationId}`
+        : `用户 ${dingtalkTarget.userId}`;
+
+      try {
+        const token = await getAccessToken(config);
+        const cardInstanceId = `card_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+        log?.info?.(`[DingTalk][TemplateCard] 开始创建卡片: ${targetDesc}, outTrackId=${cardInstanceId}`);
+
+        // 构建卡片数据
+        const cardData: Record<string, string> = {};
+        for (const [key, value] of Object.entries(templateVariables)) {
+          cardData[key] = String(value);
+        }
+
+        // 创建卡片实例
+        const createBody = {
+          cardTemplateId: templateId,
+          outTrackId: cardInstanceId,
+          cardData: { cardParamMap: cardData },
+          callbackType: cardOptions?.callbackType || 'STREAM',
+          imGroupOpenSpaceModel: { supportForward: cardOptions?.supportForward !== false },
+          imRobotOpenSpaceModel: { supportForward: cardOptions?.supportForward !== false },
+        };
+
+        log?.info?.(`[DingTalk][TemplateCard] POST /v1.0/card/instances`);
+        const createResp = await axios.post(`${DINGTALK_API}/v1.0/card/instances`, createBody, {
+          headers: { 'x-acs-dingtalk-access-token': token, 'Content-Type': 'application/json' },
+        });
+        log?.info?.(`[DingTalk][TemplateCard] 创建卡片响应: status=${createResp.status}`);
+
+        // 投放卡片
+        const deliverBody = buildDeliverBody(cardInstanceId, dingtalkTarget, config.clientId);
+
+        log?.info?.(`[DingTalk][TemplateCard] POST /v1.0/card/instances/deliver`);
+        const deliverResp = await axios.post(`${DINGTALK_API}/v1.0/card/instances/deliver`, deliverBody, {
+          headers: { 'x-acs-dingtalk-access-token': token, 'Content-Type': 'application/json' },
+        });
+        log?.info?.(`[DingTalk][TemplateCard] 投放卡片响应: status=${deliverResp.status}`);
+
+        respond(true, {
+          ok: true,
+          cardInstanceId,
+          target: targetDesc,
+          templateId,
+        });
+
+      } catch (err: any) {
+        log?.error?.(`[DingTalk][TemplateCard] 发送失败 (${targetDesc}): ${err.message}`);
+        if (err.response) {
+          log?.error?.(`[DingTalk][TemplateCard] 错误响应: status=${err.response.status} data=${JSON.stringify(err.response.data)}`);
+        }
+        respond(false, {
+          ok: false,
+          error: err.response?.data?.message || err.message,
+        });
+      }
+    });
+
+    /**
      * 智能发送消息（自动检测目标类型和消息格式）
      * 参数：
      *   - target: 目标（user:<userId> 或 group:<openConversationId>）
