@@ -1,9 +1,10 @@
 # DingTalk OpenClaw Connector
 
-将钉钉机器人连接到 [OpenClaw](https://openclaw.ai) Gateway，支持 AI Card 流式响应和会话管理。
+将钉钉机器人连接到 [OpenClaw](https://openclaw.ai) Gateway，支持 AI Card 流式响应和模板卡片。
 
 ## 特性
 
+- ✅ **模板卡片** - 支持自定义模板样式，markdown 内容渲染
 - ✅ **AI Card 流式响应** - 打字机效果，实时显示 AI 回复
 - ✅ **会话持久化** - 同一用户的多轮对话共享上下文
 - ✅ **超时自动新会话** - 默认 30 分钟无活动自动开启新对话
@@ -17,7 +18,7 @@
 graph LR
     subgraph "钉钉"
         A["用户发消息"] --> B["Stream WebSocket"]
-        E["AI 流式卡片"] --> F["用户看到回复"]
+        E["模板卡片/AI Card"] --> F["用户看到回复"]
     end
 
     subgraph "Connector"
@@ -30,8 +31,11 @@ graph LR
 
 ## 效果
 
-<img width="360" height="780" alt="image" src="https://github.com/user-attachments/assets/f2a3db5d-67fa-4078-b19c-a2acdff9f2bf" />
-<img width="360" height="780" alt="image" src="https://github.com/user-attachments/assets/c3e51c05-c44c-4bc4-8877-911ec471b645" />
+### 模板卡片效果
+<img width="360" height="500" alt="模板卡片" src="https://github.com/user-attachments/assets/c3e51c05-c44c-4bc4-8877-911ec471b645" />
+
+### AI Card 效果
+<img width="360" height="500" alt="AI Card" src="https://github.com/user-attachments/assets/f2a3db5d-67fa-4078-b19c-a2acdff9f2bf" />
 
 ## 安装
 
@@ -39,19 +43,17 @@ graph LR
 
 ```bash
 # 远程安装
-openclaw plugins install https://github.com/DingTalk-Real-AI/dingtalk-moltbot-connector.git
+openclaw plugins install https://github.com/yetio/dingtalk-openclaw-connector.git
 
 # 升级插件
 openclaw plugins update dingtalk-connector
 
 # 或本地开发模式
-git clone https://github.com/DingTalk-Real-AI/dingtalk-moltbot-connector.git
-cd dingtalk-moltbot-connector
+git clone https://github.com/yetio/dingtalk-openclaw-connector.git
+cd dingtalk-openclaw-connector
 npm install
 openclaw plugins install -l .
 ```
-
-> **⚠️ 旧版本升级提示：** 如果你之前安装过旧版本的 Clawdbot/Moltbot 或 0.4.0 以下版本的 connector 插件，可能会出现兼容性问题，请参考 [Q: 升级后出现插件加载异常或配置不生效](#q-升级后出现插件加载异常或配置不生效)。
 
 ### 2. 配置
 
@@ -62,14 +64,15 @@ openclaw plugins install -l .
   "channels": {
     "dingtalk-connector": {
       "enabled": true,
-      "clientId": "dingxxxxxxxxx",       // 钉钉 AppKey
-      "clientSecret": "your_secret_here", // 钉钉 AppSecret
-      "gatewayToken": "",                 // 可选：Gateway 认证 token, opencode.json配置中 gateway.auth.token 的值 
-      "gatewayPassword": "",              // 可选：Gateway 认证 password（与 token 二选一）
-      "sessionTimeout": 1800000           // 可选：会话超时(ms)，默认 30 分钟
+      "clientId": "dingxxxxxxxxx",           // 钉钉 AppKey
+      "clientSecret": "your_secret_here",   // 钉钉 AppSecret
+      "cardTemplateId": "your_template_id", // 可选：模板卡片 ID（.schema 结尾）
+      "gatewayToken": "",                   // 可选：Gateway 认证 token
+      "gatewayPassword": "",                // 可选：Gateway 认证 password
+      "sessionTimeout": 1800000             // 可选：会话超时(ms)，默认 30 分钟
     }
   },
-  "gateway": { // gateway通常是已有的节点，配置时注意把http部分追加到已有节点下
+  "gateway": {
     "http": {
       "endpoints": {
         "chatCompletions": {
@@ -81,9 +84,10 @@ openclaw plugins install -l .
 }
 ```
 
-或者在 OpenClaw Dashboard 页面配置：
-
-<img width="1916" height="1996" alt="image" src="https://github.com/user-attachments/assets/00b585ca-c1df-456c-9c65-7345a718b94b" />
+**模板卡片配置说明：**
+- `cardTemplateId`：可选，配置后消息将使用模板卡片发送
+- 模板需要提前在钉钉开放平台创建，模板中需要有一个 `content` 变量用于显示消息内容
+- 如果不配置 `cardTemplateId`，将使用 AI Card
 
 ### 3. 重启 Gateway
 
@@ -108,15 +112,31 @@ openclaw plugins list  # 确认 dingtalk-connector 已加载
    - `qyapi_robot_sendmsg`
 5. **发布应用**，记录 **AppKey** 和 **AppSecret**
 
+## 创建模板卡片（可选）
+
+1. 在钉钉开放平台进入 **卡片平台** → 创建卡片
+2. 设计卡片模板，添加一个 `content` 变量（用于显示消息内容）
+3. 发布卡片，获取模板 ID（格式：`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.schema`）
+4. 将模板 ID 配置到 `cardTemplateId` 配置项
+
 ## 配置参考
 
 | 配置项 | 环境变量 | 说明 |
 |--------|----------|------|
 | `clientId` | `DINGTALK_CLIENT_ID` | 钉钉 AppKey |
 | `clientSecret` | `DINGTALK_CLIENT_SECRET` | 钉钉 AppSecret |
+| `cardTemplateId` | `DINGTALK_CARD_TEMPLATE_ID` | 模板卡片 ID（可选） |
 | `gatewayToken` | `OPENCLAW_GATEWAY_TOKEN` | Gateway 认证 token（可选） |
 | `gatewayPassword` | — | Gateway 认证 password（可选，与 token 二选一） |
 | `sessionTimeout` | — | 会话超时时间，单位毫秒（默认 1800000 = 30分钟） |
+| `enableMediaUpload` | — | 是否启用图片自动上传（默认 true） |
+| `systemPrompt` | — | 自定义 system prompt |
+
+## 消息发送优先级
+
+1. **模板卡片**（如果配置了 `cardTemplateId`）
+2. **AI Card**
+3. **普通消息**
 
 ## 会话命令
 
@@ -128,7 +148,7 @@ openclaw plugins list  # 确认 dingtalk-connector 已加载
 ## 项目结构
 
 ```
-dingtalk-moltbot-connector/
+dingtalk-openclaw-connector/
 ├── plugin.ts              # 插件入口
 ├── openclaw.plugin.json   # 插件清单
 ├── package.json           # npm 依赖
@@ -139,13 +159,11 @@ dingtalk-moltbot-connector/
 
 ### Q: 出现 405 错误
 
-<img width="698" height="193" alt="image" src="https://github.com/user-attachments/assets/f2abd9c0-6c72-45b3-aee1-39fb477664bd" />
-
 需要在 `~/.openclaw/openclaw.json` 中启用 chatCompletions 端点：
 
 ```json5
 {
-  "gateway": { // gateway通常是已有的节点，配置时注意把http部分追加到已有节点下
+  "gateway": {
     "http": {
       "endpoints": {
         "chatCompletions": {
@@ -159,11 +177,7 @@ dingtalk-moltbot-connector/
 
 ### Q: 出现 401 错误
 
-<img width="895" height="257" alt="image" src="https://github.com/user-attachments/assets/5d6227f0-b4b1-41c4-ad88-82a7ec0ade1e" />
-
-检查 `~/.openclaw/openclaw.json` 中的gateway.auth鉴权的 token/password 是否正确：
-
-<img width="1322" height="604" alt="image" src="https://github.com/user-attachments/assets/b9f97446-5035-4325-a0dd-8f8e32f7b86a" />
+检查 `~/.openclaw/openclaw.json` 中的 gateway.auth 鉴权的 token/password 是否正确。
 
 ### Q: 钉钉机器人无响应
 
@@ -171,37 +185,21 @@ dingtalk-moltbot-connector/
 2. 确认机器人配置为 **Stream 模式**（非 Webhook）
 3. 确认 AppKey/AppSecret 正确
 
+### Q: 模板卡片不显示内容
+
+1. 确认模板中有一个 `content` 变量
+2. 确认模板已发布
+3. 检查日志中的 `cardTemplateId` 配置是否正确
+
 ### Q: AI Card 不显示，只有纯文本
 
 需要开通权限 `Card.Streaming.Write` 和 `Card.Instance.Write`，并重新发布应用。
-
-### Q: 升级后出现插件加载异常或配置不生效
-
-由于官方两次更名（Clawdbot → Moltbot → OpenClaw），旧版本（0.4.0 以下）的 connector 插件可能与新版本不兼容。建议按以下步骤处理：
-
-1. 先检查 `~/.openclaw/openclaw.json`（或旧版的 `~/.clawdbot/clawdbot.json`、`~/.moltbot/moltbot.json`），如果其中存在 dingtalk 相关的 JSON 节点（如 `channels.dingtalk`、`plugins.entries.dingtalk` 等），请将这些节点全部删除。
-
-2. 然后清除旧插件并重新安装：
-
-```bash
-rm -rf ~/.clawdbot/extensions/dingtalk-connector
-rm -rf ~/.moltbot/extensions/dingtalk-connector
-rm -rf ~/.openclaw/extensions/dingtalk-connector
-openclaw plugins install https://github.com/DingTalk-Real-AI/dingtalk-moltbot-connector.git
-```
 
 ### Q: 图片不显示
 
 1. 确认 `enableMediaUpload: true`（默认开启）
 2. 检查日志 `[DingTalk][Media]` 相关输出
 3. 确认钉钉应用有图片上传权限
-
-## 依赖
-
-| 包 | 用途 |
-|----|------|
-| `dingtalk-stream` | 钉钉 Stream 协议客户端 |
-| `axios` | HTTP 客户端 |
 
 ## License
 
