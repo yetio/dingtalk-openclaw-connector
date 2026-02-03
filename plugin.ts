@@ -2237,7 +2237,8 @@ async function handleDingTalkMessage(params: {
             .trim();
 
           if (templateToken) {
-            await axios.put(`${DINGTALK_API}/v1.0/card/streaming`, {
+            log?.info?.(`[DingTalk] streaming 中间更新: len=${displayContent.length}`);
+            const streamResp = await axios.put(`${DINGTALK_API}/v1.0/card/streaming`, {
               outTrackId: templateCardId,
               guid: `${Date.now()}_${Date.now() % 1000}`,
               key: 'content',
@@ -2248,6 +2249,7 @@ async function handleDingTalkMessage(params: {
             }, {
               headers: { 'x-acs-dingtalk-access-token': templateToken, 'Content-Type': 'application/json' },
             });
+            log?.info?.(`[DingTalk] streaming 中间更新响应: ${streamResp.status}`);
           }
           lastUpdateTime = now;
         }
@@ -2266,7 +2268,8 @@ async function handleDingTalkMessage(params: {
       const finalContent = accumulated.trim() || '✅ 处理完成';
 
       if (templateToken) {
-        await axios.put(`${DINGTALK_API}/v1.0/card/streaming`, {
+        log?.info?.(`[DingTalk] streaming 完成: len=${finalContent.length}, isFinalize=true`);
+        const streamResp = await axios.put(`${DINGTALK_API}/v1.0/card/streaming`, {
           outTrackId: templateCardId,
           guid: `${Date.now()}_${Date.now() % 1000}`,
           key: 'content',
@@ -2277,13 +2280,15 @@ async function handleDingTalkMessage(params: {
         }, {
           headers: { 'x-acs-dingtalk-access-token': templateToken, 'Content-Type': 'application/json' },
         });
+        log?.info?.(`[DingTalk] streaming 完成响应: ${streamResp.status}, data=${JSON.stringify(streamResp.data)}`);
       }
       log?.info?.(`[DingTalk] 模板卡片完成: ${finalContent.length} 字符`);
 
     } catch (err: any) {
       log?.error?.(`[DingTalk] Gateway 调用失败: ${err.message}`);
       if (templateToken) {
-        await axios.put(`${DINGTALK_API}/v1.0/card/streaming`, {
+        log?.info?.(`[DingTalk] streaming 错误: ${err.message}`);
+        const streamResp = await axios.put(`${DINGTALK_API}/v1.0/card/streaming`, {
           outTrackId: templateCardId,
           guid: `${Date.now()}_${Date.now() % 1000}`,
           key: 'content',
@@ -2294,6 +2299,7 @@ async function handleDingTalkMessage(params: {
         }, {
           headers: { 'x-acs-dingtalk-access-token': templateToken, 'Content-Type': 'application/json' },
         });
+        log?.info?.(`[DingTalk] streaming 错误响应: ${streamResp.status}`);
       }
     }
 
