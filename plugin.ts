@@ -2660,30 +2660,47 @@ const plugin = {
       }
 
       // 根据目标类型构建请求体
-      const outTrackId = `card_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      const outTrackId = `card_${Date.now()}_${Date.now() % 10000}`;
+      const callbackRouteKey = `route_${Date.now()}`;
+      
       const createBody: any = {
         cardTemplateId: templateId,
         outTrackId,
+        callbackType: cardOptions?.callbackType || 'STREAM',
+        callbackRouteKey,
         cardData: { cardParamMap: cardData },
-        callbackType: cardOptions?.callbackType || 'sync',
         userIdType,
       };
 
       // 单聊：直接指定 userId
       if (targetStr.startsWith('user:')) {
         createBody.userId = targetStr.slice(5);
+        createBody.imRobotOpenSpaceModel = {
+          supportForward: cardOptions?.supportForward !== false,
+          notification: {
+            alertContent: cardOptions?.alertContent || '你收到了一个卡片消息',
+            notificationOff: false,
+          },
+        };
       }
       // 群聊：使用 openSpaceId
       else if (targetStr.startsWith('group:')) {
         const openConversationId = targetStr.slice(6);
         createBody.openSpaceId = `dtv1.card//IM_GROUP.${openConversationId}`;
+        createBody.imGroupOpenSpaceModel = {
+          supportForward: cardOptions?.supportForward !== false,
+          notification: {
+            alertContent: cardOptions?.alertContent || '群聊新消息',
+            notificationOff: false,
+          },
+        };
       } else {
         return respond(false, { error: 'target format invalid. Use user:<userId> or group:<openConversationId>' });
       }
 
-      const targetDesc = targetStr.startsWith('group:')
+const targetDesc = targetStr.startsWith('group:')
         ? `群聊 ${targetStr.slice(6)}`
-        : `用户 ${targetStr.slice(4)}`;
+        : `用户 ${targetStr.slice(5)}`;
 
       try {
         const token = await getAccessToken(config);
