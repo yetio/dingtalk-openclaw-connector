@@ -2179,10 +2179,125 @@ async function handleDingTalkMessage(params: {
     systemPrompts.push(dingtalkConfig.systemPrompt);
   }
 
-  // 尝试创建 AI Card
-  const card = await createAICard(dingtalkConfig, data, log);
+  // 优先使用配置的模板卡片
+  const cardTemplateId = dingtalkConfig.cardTemplateId;
+  let templateCardId: string | null = null;
+  let templateToken: string | null = null;
+  let useTemplate = false;
 
-  if (card) {
+  if (cardTemplateId) {
+    // 尝试创建模板卡片
+    const isGroup = data.conversationType === '2';
+    const cardResult = isGroup
+      ? await sendCardToGroup(dingtalkConfig, data.conversationId, cardTemplateId, '', log)
+      : await sendCardToUser(dingtalkConfig, data.senderStaffId || data.senderId, cardTemplateId, '', log);
+
+    if (cardResult.ok) {
+      templateCardId = cardResult.cardInstanceId || null;
+      templateToken = await getAccessToken(dingtalkConfig);
+      useTemplate = true;
+      log?.info?.(`[DingTalk] 使用模板卡片: ${templateCardId}`);
+    } else {
+      log?.warn?.(`[DingTalk] 模板卡片创建失败，回退到 AI Card`);
+    }
+  }
+
+  // 如果模板卡片失败，创建 AI Card
+  const card = useTemplate ? null : await createAICard(dingtalkConfig, data, log);
+
+  if (useTemplate && templateCardId) {
+    // ===== 模板卡片流式模式 =====
+    let accumulated = '';
+    let lastUpdateTime = 0;
+    const updateInterval = 300;
+    let chunkCount = 0;
+
+    try {
+      log?.info?.(`[DingTalk] 开始请求 Gateway 流式接口...`);
+      for await (const chunk of streamFromGateway({
+        userContent: content.text,
+        systemPrompts,
+        sessionKey,
+        gatewayAuth,
+        log,
+      })) {
+        accumulated += chunk;
+        chunkCount++;
+
+        if (chunkCount <= 3) {
+          log?.info?.(`[DingTalk] Gateway chunk #${chunkCount}: "${chunk.slice(0, 50)}..." (accumulated=${accumulated.length})`);
+        }
+
+        const now = Date.now();
+        if (now - lastUpdateTime >= updateInterval) {
+          const displayContent = accumulated
+            .replace(FILE_MARKER_PATTERN, '')
+            .replace(VIDEO_MARKER_PATTERN, '')
+            .replace(AUDIO_MARKER_PATTERN, '')
+            .trim();
+
+          if (templateToken) {
+            await axios.put(`${DINGTALK_API}/v1.0/card/streaming`, {
+              outTrackId: templateCardId,
+              guid: `${Date.now()}_${Date.now() % 1000}`,
+              key: 'content',
+              content: displayContent,
+              isFull: true,
+              isFinalize: false,
+              isError: false,
+            }, {
+              headers: { 'x-acs-dingtalk-access-token': templateToken, 'Content-Type': 'application/json' },
+            });
+          }
+          lastUpdateTime = now;
+        }
+      }
+
+      log?.info?.(`[DingTalk] Gateway 流完成，共 ${chunkCount} chunks`);
+
+      accumulated = await processLocalImages(accumulated, oapiToken, log);
+      const proactiveTarget: AICardTarget = isDirect
+        ? { type: 'user', userId: data.senderStaffId || data.senderId }
+        : { type: 'group', openConversationId: data.conversationId };
+      accumulated = await processVideoMarkers(accumulated, '', dingtalkConfig, oapiToken, log, true, proactiveTarget);
+      accumulated = await processAudioMarkers(accumulated, '', dingtalkConfig, oapiToken, log, true, proactiveTarget);
+      accumulated = await processFileMarkers(accumulated, sessionWebhook, dingtalkConfig, oapiToken, log, true, proactiveTarget);
+
+      const finalContent = accumulated.trim() || '✅ 处理完成';
+
+      if (templateToken) {
+        await axios.put(`${DINGTALK_API}/v1.0/card/streaming`, {
+          outTrackId: templateCardId,
+          guid: `${Date.now()}_${Date.now() % 1000}`,
+          key: 'content',
+          content: finalContent,
+          isFull: true,
+          isFinalize: true,
+          isError: false,
+        }, {
+          headers: { 'x-acs-dingtalk-access-token': templateToken, 'Content-Type': 'application/json' },
+        });
+      }
+      log?.info?.(`[DingTalk] 模板卡片完成: ${finalContent.length} 字符`);
+
+    } catch (err: any) {
+      log?.error?.(`[DingTalk] Gateway 调用失败: ${err.message}`);
+      if (templateToken) {
+        await axios.put(`${DINGTALK_API}/v1.0/card/streaming`, {
+          outTrackId: templateCardId,
+          guid: `${Date.now()}_${Date.now() % 1000}`,
+          key: 'content',
+          content: `⚠️ 响应中断: ${err.message}`,
+          isFull: true,
+          isFinalize: true,
+          isError: false,
+        }, {
+          headers: { 'x-acs-dingtalk-access-token': templateToken, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+  } else if (card) {
     // ===== AI Card 流式模式 =====
     log?.info?.(`[DingTalk] AI Card 创建成功: ${card.cardInstanceId}`);
 
