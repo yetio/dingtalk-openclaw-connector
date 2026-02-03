@@ -2714,7 +2714,32 @@ const targetDesc = targetStr.startsWith('group:')
 
         log?.info?.(`[DingTalk][TemplateCard] 创建成功: status=${createResp.status}, cardInstanceId=${outTrackId}`);
 
-        // 步骤 2：如果启用了流式更新，按顺序推送内容片段
+        // 步骤 2：投放卡片到用户
+        log?.info?.(`[DingTalk][TemplateCard] POST /v1.0/card/instances/deliver`);
+        
+        // 构建 deliver 请求体
+        const deliverBody: any = {
+          outTrackId,
+          userIdType,
+        };
+        
+        if (targetStr.startsWith('user:')) {
+          deliverBody.openSpaceId = `dtv1.card//IM_ROBOT.${targetStr.slice(5)}`;
+          deliverBody.imRobotOpenDeliverModel = { spaceType: 'IM_ROBOT' };
+        } else if (targetStr.startsWith('group:')) {
+          const openConversationId = targetStr.slice(6);
+          deliverBody.openSpaceId = `dtv1.card//IM_GROUP.${openConversationId}`;
+        }
+        
+        log?.info?.(`[DingTalk][TemplateCard] deliver body=${JSON.stringify(deliverBody)}`);
+        
+        const deliverResp = await axios.post(`${DINGTALK_API}/v1.0/card/instances/deliver`, deliverBody, {
+          headers: { 'x-acs-dingtalk-access-token': token, 'Content-Type': 'application/json' },
+        });
+        
+        log?.info?.(`[DingTalk][TemplateCard] 投放成功: status=${deliverResp.status}, data=${JSON.stringify(deliverResp.data)}`);
+
+        // 步骤 3：如果启用了流式更新，按顺序推送内容片段
         const streamResults: any[] = [];
         if (streamUpdates?.enabled && streamUpdates?.updates?.length > 0) {
           const contentKey = streamUpdates.contentKey || 'content';
