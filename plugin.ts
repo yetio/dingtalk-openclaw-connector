@@ -2739,7 +2739,30 @@ const targetDesc = targetStr.startsWith('group:')
         
         log?.info?.(`[DingTalk][TemplateCard] 投放成功: status=${deliverResp.status}, data=${JSON.stringify(deliverResp.data)}`);
 
-        // 步骤 3：如果启用了流式更新，按顺序推送内容片段
+        // 步骤 3：流式更新卡片内容（完成卡片显示）
+        const streamingBody = {
+          outTrackId,
+          guid: `${Date.now()}_${Date.now() % 1000}`,
+          key: 'content',
+          content: cardData.content || '',
+          isFull: true,
+          isFinalize: true,
+          isError: false,
+        };
+
+        log?.info?.(`[DingTalk][TemplateCard] PUT /v1.0/card/streaming`);
+
+        try {
+          const streamResp = await axios.put(`${DINGTALK_API}/v1.0/card/streaming`, streamingBody, {
+            headers: { 'x-acs-dingtalk-access-token': token, 'Content-Type': 'application/json' },
+          });
+
+          log?.info?.(`[DingTalk][TemplateCard] streaming 完成: status=${streamResp.status}, data=${JSON.stringify(streamResp.data)}`);
+        } catch (streamErr: any) {
+          log?.error?.(`[DingTalk][TemplateCard] streaming 失败: ${streamErr.message}`);
+        }
+
+        // 步骤 4：如果启用了流式更新，按顺序推送内容片段
         const streamResults: any[] = [];
         if (streamUpdates?.enabled && streamUpdates?.updates?.length > 0) {
           const contentKey = streamUpdates.contentKey || 'content';
