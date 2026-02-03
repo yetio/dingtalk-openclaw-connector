@@ -2586,36 +2586,50 @@ const plugin = {
     });
 
     /**
-     * 发送自定义模板卡片（支持 Markdown 变量）
+     * 发送自定义模板卡片（支持流式更新，参考 LangBot 实现）
+     * 
+     * 传统模式：一次发送完整卡片
+     * 流式模式：先创建卡片，再逐步更新内容（类似打字机效果）
+     * 
      * 参数：
      *   - target: 目标（user:<userId> 或 group:<openConversationId>）
      *   - templateId: 卡片模板 ID（从钉钉开放平台创建）
      *   - templateVariables: 模板变量（JSON 对象，会自动转为字符串）
+     *   - streamUpdates?: 流式更新配置（可选）：
+     *     - enabled: 是否启用流式更新（默认 false）
+     *     - contentKey: 模板中用于流式更新的字段 key（默认 content）
+     *     - updates: 流式内容片段数组（会按顺序依次推送）
      *   - cardOptions?: 可选配置：
      *     - callbackType?: 'sync' | 'async'（默认 sync）
      *     - userIdType?: number（默认 1: userId, 2: unionId）
      *   - accountId?: 账号 ID
      *
-     * 使用示例：
+     * 使用示例（传统模式）：
      *   dingtalk-connector.sendTemplateCard({
      *     target: 'user:manager1234',
      *     templateId: 'your-template-id',
-     *     templateVariables: {
-     *       title: '股票分析报告',
-     *       stock_code: '300870',
-     *       stock_name: '欧陆通',
-     *       price: '238.50',
-     *       score: '58',
-     *       advice: '🟡 持有',
-     *       decision: '缩量回踩MA10/MA20支撑带',
-     *       ideal_buy: '236.50',
-     *       stop_loss: '224.50',
-     *       take_profit: '255.00'
+     *     templateVariables: { title: '股票分析报告', stock_code: '600519', ... }
+     *   })
+     * 
+     * 使用示例（流式模式）：
+     *   dingtalk-connector.sendTemplateCard({
+     *     target: 'user:manager1234',
+     *     templateId: 'your-template-id',
+     *     templateVariables: { title: '正在分析...' },
+     *     streamUpdates: {
+     *       enabled: true,
+     *       contentKey: 'content',
+     *       updates: [
+     *         '正在获取数据...',
+     *         '数据加载完成',
+     *         '分析中...',
+     *         '✅ 分析完成！得分: 85'
+     *       ]
      *     }
      *   })
      */
     api.registerGatewayMethod('dingtalk-connector.sendTemplateCard', async ({ respond, cfg, params, log }: any) => {
-      const { target, templateId, templateVariables, cardOptions, accountId } = params || {};
+      const { target, templateId, templateVariables, streamUpdates, cardOptions, accountId } = params || {};
       const account = dingtalkPlugin.config.resolveAccount(cfg, accountId);
       const config = account?.config;
 
@@ -2646,9 +2660,10 @@ const plugin = {
       }
 
       // 根据目标类型构建请求体
+      const outTrackId = `card_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
       const createBody: any = {
         cardTemplateId: templateId,
-        outTrackId: `card_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+        outTrackId,
         cardData: { cardParamMap: cardData },
         callbackType: cardOptions?.callbackType || 'sync',
         userIdType,
@@ -2673,21 +2688,82 @@ const plugin = {
       try {
         const token = await getAccessToken(config);
 
+        // 步骤 1：创建卡片实例
         log?.info?.(`[DingTalk][TemplateCard] 发送卡片: ${targetDesc}, templateId=${templateId}`);
         log?.info?.(`[DingTalk][TemplateCard] POST /v1.0/card/instances body=${JSON.stringify(createBody)}`);
-
         const createResp = await axios.post(`${DINGTALK_API}/v1.0/card/instances`, createBody, {
           headers: { 'x-acs-dingtalk-access-token': token, 'Content-Type': 'application/json' },
         });
 
-        log?.info?.(`[DingTalk][TemplateCard] 响应: status=${createResp.status}, data=${JSON.stringify(createResp.data)}`);
+        log?.info?.(`[DingTalk][TemplateCard] 创建成功: status=${createResp.status}, cardInstanceId=${outTrackId}`);
+
+        // 步骤 2：如果启用了流式更新，按顺序推送内容片段
+        const streamResults: any[] = [];
+        if (streamUpdates?.enabled && streamUpdates?.updates?.length > 0) {
+          const contentKey = streamUpdates.contentKey || 'content';
+          const updates = streamUpdates.updates;
+          
+          log?.info?.(`[DingTalk][TemplateCard] 开始流式更新，共 ${updates.length} 个片段`);
+
+          for (let i = 0; i < updates.length; i++) {
+            const content = updates[i];
+            const isFinal = i === updates.length - 1;  // 最后一条标记为完成
+            const guid = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${i}`;
+            
+            // 构造流式更新请求（参考 LangBot 的 async_streaming 实现）
+            const streamingBody = {
+              outTrackId,
+              guid,
+              key: contentKey,
+              content,
+              isFull: true,  // 全量替换
+              isFinalize: isFinal,
+              isError: false,
+            };
+
+            log?.info?.(`[DingTalk][TemplateCard] streaming ${i + 1}/${updates.length}: len=${content.length}, isFinalize=${isFinal}`);
+
+            try {
+              const streamResp = await axios.put(`${DINGTALK_API}/v1.0/card/streaming`, streamingBody, {
+                headers: { 'x-acs-dingtalk-access-token': token, 'Content-Type': 'application/json' },
+              });
+              
+              streamResults.push({
+                index: i,
+                guid,
+                success: true,
+                status: streamResp.status,
+              });
+              
+              log?.info?.(`[DingTalk][TemplateCard] streaming ${i + 1} 成功: status=${streamResp.status}`);
+              
+            } catch (streamErr: any) {
+              log?.error?.(`[DingTalk][TemplateCard] streaming ${i + 1} 失败: ${streamErr.message}`);
+              streamResults.push({
+                index: i,
+                guid,
+                success: false,
+                error: streamErr.response?.data?.message || streamErr.message,
+              });
+            }
+
+            // 避免请求过快，稍作延迟
+            if (i < updates.length - 1) {
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
+          }
+
+          log?.info?.(`[DingTalk][TemplateCard] 流式更新完成: 成功 ${streamResults.filter(r => r.success).length}/${updates.length}`);
+        }
 
         respond(true, {
           ok: true,
-          cardInstanceId: createBody.outTrackId,
+          cardInstanceId: outTrackId,
           target: targetDesc,
           templateId,
           response: createResp.data,
+          streamingEnabled: streamUpdates?.enabled || false,
+          streamingResults: streamResults,
         });
 
       } catch (err: any) {
