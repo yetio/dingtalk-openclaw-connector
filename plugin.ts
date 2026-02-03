@@ -2593,7 +2593,7 @@ const plugin = {
      *   - templateVariables: 模板变量（JSON 对象，会自动转为字符串）
      *   - cardOptions?: 可选配置：
      *     - callbackType?: 'sync' | 'async'（默认 sync）
-     *     - supportForward?: boolean（是否支持转发，默认 true）
+     *     - userIdType?: number（默认 1: userId, 2: unionId）
      *   - accountId?: 账号 ID
      *
      * 使用示例：
@@ -2637,62 +2637,57 @@ const plugin = {
 
       // 解析目标
       const targetStr = String(target);
-      let dingtalkTarget: AICardTarget;
+      const userIdType = cardOptions?.userIdType || 1;  // 1: userId, 2: unionId
 
+      // 构建卡片数据
+      const cardData: Record<string, string> = {};
+      for (const [key, value] of Object.entries(templateVariables)) {
+        cardData[key] = String(value);
+      }
+
+      // 根据目标类型构建请求体
+      const createBody: any = {
+        cardTemplateId: templateId,
+        outTrackId: `card_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+        cardData: { cardParamMap: cardData },
+        callbackType: cardOptions?.callbackType || 'sync',
+        userIdType,
+      };
+
+      // 单聊：直接指定 userId
       if (targetStr.startsWith('user:')) {
-        dingtalkTarget = { type: 'user', userId: targetStr.slice(5) };
-      } else if (targetStr.startsWith('group:')) {
-        dingtalkTarget = { type: 'group', openConversationId: targetStr.slice(6) };
+        createBody.userId = targetStr.slice(5);
+      }
+      // 群聊：使用 openSpaceId
+      else if (targetStr.startsWith('group:')) {
+        const openConversationId = targetStr.slice(6);
+        createBody.openSpaceId = `dtv1.card//IM_GROUP.${openConversationId}`;
       } else {
         return respond(false, { error: 'target format invalid. Use user:<userId> or group:<openConversationId>' });
       }
 
-      const targetDesc = dingtalkTarget.type === 'group'
-        ? `群聊 ${dingtalkTarget.openConversationId}`
-        : `用户 ${dingtalkTarget.userId}`;
+      const targetDesc = targetStr.startsWith('group:')
+        ? `群聊 ${targetStr.slice(6)}`
+        : `用户 ${targetStr.slice(4)}`;
 
       try {
         const token = await getAccessToken(config);
-        const cardInstanceId = `card_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
-        log?.info?.(`[DingTalk][TemplateCard] 开始创建卡片: ${targetDesc}, outTrackId=${cardInstanceId}`);
+        log?.info?.(`[DingTalk][TemplateCard] 发送卡片: ${targetDesc}, templateId=${templateId}`);
+        log?.info?.(`[DingTalk][TemplateCard] POST /v1.0/card/instances body=${JSON.stringify(createBody)}`);
 
-        // 构建卡片数据
-        const cardData: Record<string, string> = {};
-        for (const [key, value] of Object.entries(templateVariables)) {
-          cardData[key] = String(value);
-        }
-
-        // 创建卡片实例
-        const createBody = {
-          cardTemplateId: templateId,
-          outTrackId: cardInstanceId,
-          cardData: { cardParamMap: cardData },
-          callbackType: cardOptions?.callbackType || 'STREAM',
-          imGroupOpenSpaceModel: { supportForward: cardOptions?.supportForward !== false },
-          imRobotOpenSpaceModel: { supportForward: cardOptions?.supportForward !== false },
-        };
-
-        log?.info?.(`[DingTalk][TemplateCard] POST /v1.0/card/instances`);
         const createResp = await axios.post(`${DINGTALK_API}/v1.0/card/instances`, createBody, {
           headers: { 'x-acs-dingtalk-access-token': token, 'Content-Type': 'application/json' },
         });
-        log?.info?.(`[DingTalk][TemplateCard] 创建卡片响应: status=${createResp.status}`);
 
-        // 投放卡片
-        const deliverBody = buildDeliverBody(cardInstanceId, dingtalkTarget, config.clientId);
-
-        log?.info?.(`[DingTalk][TemplateCard] POST /v1.0/card/instances/deliver`);
-        const deliverResp = await axios.post(`${DINGTALK_API}/v1.0/card/instances/deliver`, deliverBody, {
-          headers: { 'x-acs-dingtalk-access-token': token, 'Content-Type': 'application/json' },
-        });
-        log?.info?.(`[DingTalk][TemplateCard] 投放卡片响应: status=${deliverResp.status}`);
+        log?.info?.(`[DingTalk][TemplateCard] 响应: status=${createResp.status}, data=${JSON.stringify(createResp.data)}`);
 
         respond(true, {
           ok: true,
-          cardInstanceId,
+          cardInstanceId: createBody.outTrackId,
           target: targetDesc,
           templateId,
+          response: createResp.data,
         });
 
       } catch (err: any) {
