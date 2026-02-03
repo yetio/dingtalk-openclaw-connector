@@ -2179,16 +2179,49 @@ async function handleDingTalkMessage(params: {
     systemPrompts.push(dingtalkConfig.systemPrompt);
   }
 
-  // 尝试创建 AI Card
-  const card = await createAICard(dingtalkConfig, data, log);
+  // 优先使用配置的模板卡片
+  const cardTemplateId = dingtalkConfig.cardTemplateId;
+  let useTemplateCard = false;
+  let cardInstanceId: string | null = null;
+  let accessToken: string | null = null;
 
-  if (card) {
-    // ===== AI Card 流式模式 =====
-    log?.info?.(`[DingTalk] AI Card 创建成功: ${card.cardInstanceId}`);
+  if (cardTemplateId) {
+    const isGroup = data.conversationType === '2';
+    const templateTarget = isGroup
+      ? { type: 'group', openConversationId: data.conversationId }
+      : { type: 'user', userId: data.senderStaffId || data.senderId };
 
+    log?.info?.(`[DingTalk] 使用模板卡片: templateId=${cardTemplateId}, target=${isGroup ? 'group' : 'user'}`);
+
+    try {
+      const cardResult = isGroup
+        ? await sendCardToGroup(dingtalkConfig, data.conversationId, cardTemplateId, '', log)
+        : await sendCardToUser(dingtalkConfig, data.senderStaffId || data.senderId, cardTemplateId, '', log);
+
+      if (cardResult.ok) {
+        useTemplateCard = true;
+        cardInstanceId = cardResult.cardInstanceId || null;
+        accessToken = (await getAccessToken(dingtalkConfig)) || null;
+        log?.info?.(`[DingTalk] 模板卡片创建成功: ${cardInstanceId}`);
+      } else {
+        log?.warn?.(`[DingTalk] 模板卡片创建失败，回退到 AI Card`);
+      }
+    } catch (err: any) {
+      log?.error?.(`[DingTalk] 模板卡片异常: ${err.message}，回退到 AI Card`);
+    }
+  }
+
+  // 如果模板卡片失败，尝试创建 AI Card
+  let card: AICardInstance | null = null;
+  if (!useTemplateCard) {
+    card = await createAICard(dingtalkConfig, data, log);
+  }
+
+  if (useTemplateCard && cardInstanceId) {
+    // ===== 模板卡片流式模式 =====
     let accumulated = '';
     let lastUpdateTime = 0;
-    const updateInterval = 300; // 最小更新间隔 ms
+    const updateInterval = 300;
     let chunkCount = 0;
 
     try {
@@ -2207,55 +2240,79 @@ async function handleDingTalkMessage(params: {
           log?.info?.(`[DingTalk] Gateway chunk #${chunkCount}: "${chunk.slice(0, 50)}..." (accumulated=${accumulated.length})`);
         }
 
-        // 节流更新，避免过于频繁
         const now = Date.now();
         if (now - lastUpdateTime >= updateInterval) {
-          // 实时清理文件、视频、音频标记（避免用户在流式过程中看到标记）
           const displayContent = accumulated
             .replace(FILE_MARKER_PATTERN, '')
             .replace(VIDEO_MARKER_PATTERN, '')
             .replace(AUDIO_MARKER_PATTERN, '')
             .trim();
-          await streamAICard(card, displayContent, false, log);
+
+          if (accessToken) {
+            const streamingBody = {
+              outTrackId: cardInstanceId,
+              guid: `${Date.now()}_${Date.now() % 1000}`,
+              key: 'content',
+              content: displayContent,
+              isFull: true,
+              isFinalize: false,
+              isError: false,
+            };
+            await axios.put(`${DINGTALK_API}/v1.0/card/streaming`, streamingBody, {
+              headers: { 'x-acs-dingtalk-access-token': accessToken, 'Content-Type': 'application/json' },
+            });
+          }
           lastUpdateTime = now;
         }
       }
 
       log?.info?.(`[DingTalk] Gateway 流完成，共 ${chunkCount} chunks, ${accumulated.length} 字符`);
 
-      // 后处理01：上传本地图片到钉钉，替换 file:// 路径为 media_id
-      log?.info?.(`[DingTalk][Media] 开始图片后处理，内容片段="${accumulated.slice(0, 200)}..."`);
       accumulated = await processLocalImages(accumulated, oapiToken, log);
-
-      // 【关键修复】AI Card 场景使用主动消息 API 发送文件/视频，避免 sessionWebhook 失效问题
-      // 构建目标信息用于主动 API（isDirect 已在上面定义）
       const proactiveTarget: AICardTarget = isDirect
         ? { type: 'user', userId: data.senderStaffId || data.senderId }
         : { type: 'group', openConversationId: data.conversationId };
-
-      // 后处理02：提取视频标记并发送视频消息（使用主动消息 API）
-      log?.info?.(`[DingTalk][Video] 开始视频后处理 (使用主动API)`);
       accumulated = await processVideoMarkers(accumulated, '', dingtalkConfig, oapiToken, log, true, proactiveTarget);
-
-      // 后处理03：提取音频标记并发送音频消息（使用主动消息 API）
-      log?.info?.(`[DingTalk][Audio] 开始音频后处理 (使用主动API)`);
       accumulated = await processAudioMarkers(accumulated, '', dingtalkConfig, oapiToken, log, true, proactiveTarget);
-
-      // 后处理04：提取文件标记并发送独立文件消息（使用主动消息 API）
-      log?.info?.(`[DingTalk][File] 开始文件后处理 (使用主动API，目标=${JSON.stringify(proactiveTarget)})`);
       accumulated = await processFileMarkers(accumulated, sessionWebhook, dingtalkConfig, oapiToken, log, true, proactiveTarget);
 
-      // 完成 AI Card（如果内容为空，说明是纯媒体消息，使用默认提示）
       const finalContent = accumulated.trim();
-      if (finalContent.length === 0) {
-        log?.info?.(`[DingTalk][AICard] 内容为空（纯媒体消息），使用默认提示`);
-        await finishAICard(card, '✅ 媒体已发送', log);
-      } else {
-        await finishAICard(card, finalContent, log);
+
+      if (accessToken) {
+        const streamingBody = {
+          outTrackId: cardInstanceId,
+          guid: `${Date.now()}_${Date.now() % 1000}`,
+          key: 'content',
+          content: finalContent || '✅ 处理完成',
+          isFull: true,
+          isFinalize: true,
+          isError: false,
+        };
+        await axios.put(`${DINGTALK_API}/v1.0/card/streaming`, streamingBody, {
+          headers: { 'x-acs-dingtalk-access-token': accessToken, 'Content-Type': 'application/json' },
+        });
       }
-      log?.info?.(`[DingTalk] 流式响应完成，共 ${finalContent.length} 字符`);
+      log?.info?.(`[DingTalk] 模板卡片流式响应完成，共 ${finalContent.length} 字符`);
 
     } catch (err: any) {
+      log?.error?.(`[DingTalk] Gateway 调用失败: ${err.message}`);
+      if (accessToken && cardInstanceId) {
+        const streamingBody = {
+          outTrackId: cardInstanceId,
+          guid: `${Date.now()}_${Date.now() % 1000}`,
+          key: 'content',
+          content: `⚠️ 响应中断: ${err.message}`,
+          isFull: true,
+          isFinalize: true,
+          isError: false,
+        };
+        await axios.put(`${DINGTALK_API}/v1.0/card/streaming`, streamingBody, {
+          headers: { 'x-acs-dingtalk-access-token': accessToken, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+  } else if (card) {    } catch (err: any) {
       log?.error?.(`[DingTalk] Gateway 调用失败: ${err.message}`);
       log?.error?.(`[DingTalk] 错误详情: ${err.stack}`);
       accumulated += `\n\n⚠️ 响应中断: ${err.message}`;
